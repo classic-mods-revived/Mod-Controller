@@ -15,6 +15,10 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
 public class FileDownloader {
+    public enum Result {
+        SUCCESS, SKIPPED, FAILED
+    }
+
     private final ModrinthAPI modrinthAPI;
     private final CurseForgeAPI curseForgeAPI;
     private final boolean backupReplacedFiles;
@@ -25,11 +29,11 @@ public class FileDownloader {
         this.backupReplacedFiles = backupReplacedFiles;
     }
 
-    public boolean downloadEntry(DownloadEntry entry, Path gameDir) {
+    public Result downloadEntry(DownloadEntry entry, Path gameDir) {
         try {
             if (!entry.enabled) {
                 System.out.println("  Skipping (disabled): " + entry.name);
-                return false;
+                return Result.SKIPPED;
             }
 
             String downloadUrl;
@@ -42,7 +46,6 @@ public class FileDownloader {
                     expectedHash = entry.sha1Hash != null ? entry.sha1Hash : entry.sha512Hash;
                     hashType = entry.sha1Hash != null ? "SHA-1" : "SHA-512";
                     break;
-
                 case MODRINTH:
                     ModrinthAPI.DownloadInfo modrinthInfo = modrinthAPI.getVersionDownload(entry.versionId);
                     downloadUrl = modrinthInfo.url;
@@ -50,50 +53,91 @@ public class FileDownloader {
                     hashType = modrinthInfo.sha512 != null ? "SHA-512" : "SHA-1";
                     System.out.println("  Resolved from Modrinth: " + modrinthInfo.filename);
                     break;
-
                 case CURSEFORGE:
-                    CurseForgeAPI.DownloadInfo curseForgeInfo = curseForgeAPI.getFileDownload(
-                        entry.projectId, entry.fileId);
+                    CurseForgeAPI.DownloadInfo curseForgeInfo = curseForgeAPI.getFileDownload(entry.projectId, entry.fileId);
                     downloadUrl = curseForgeInfo.url;
                     expectedHash = curseForgeInfo.sha1;
                     hashType = "SHA-1";
                     System.out.println("  Resolved from CurseForge: " + curseForgeInfo.filename);
                     break;
-
                 default:
                     throw new IllegalStateException("Unknown source type: " + entry.sourceType);
             }
 
             Path destination = gameDir.resolve(entry.destination);
 
-            // Check if file exists and handle replacement
+// Log the resolved destination for debugging
+            System.out.println("  Resolved destination: " + destination.toAbsolutePath());
+
+// Ensure we actually target the mods folder if user gave just a filename or wrong folder
+            try {
+                String parentName = destination.getParent() != null ? destination.getParent().getFileName().toString() : "";
+                if (destination.toString().endsWith(".jar") && !"mods".equalsIgnoreCase(parentName)) {
+                    Path forced = gameDir.resolve("mods").resolve(destination.getFileName().toString());
+                    System.out.println("  Adjusted destination to mods/: " + forced.toAbsolutePath());
+                    destination = forced;
+                }
+            } catch (Exception ignore) {}
+
+            // Check existing file state
             if (Files.exists(destination)) {
                 if (!entry.replaceIfExists) {
                     System.out.println("  File exists and replacement disabled, skipping: " + entry.name);
-                    return false;
+                    return Result.SKIPPED;
                 }
-
-                // Verify if file needs updating
                 if (expectedHash != null) {
                     String existingHash = calculateHash(destination, hashType);
                     if (existingHash.equalsIgnoreCase(expectedHash)) {
                         System.out.println("  File already up to date (hash matches): " + entry.name);
-                        return false;
+                        return Result.SKIPPED;
                     }
                 }
-
-                // Backup existing file
                 if (backupReplacedFiles) {
                     backupFile(destination);
                 }
             }
 
-            System.out.println("  Downloading from: " + downloadUrl);
+            // Remove older versions if destination folder is mods and target looks like a mod jar
+            // Safer heuristic: keep full artifact id prefix (everything before the last '-' that precedes version),
+            // so 'ftb-teams-neoforge-2101.1.4.jar' => artifactPrefix 'ftb-teams-neoforge-'
+            try {
+                if (destination.getParent().getFileName().toString().equalsIgnoreCase("mods")) {
+                    String fileName = destination.getFileName().toString();
+                    if (fileName.endsWith(".jar")) {
+                        String artifactPrefix = fileName;
+                        int lastDash = artifactPrefix.lastIndexOf('-');
+                        if (lastDash > 0) {
+                            artifactPrefix = artifactPrefix.substring(0, lastDash + 1); // include trailing '-'
+                        } else {
+                            // no dash? don't attempt cleanup
+                            artifactPrefix = null;
+                        }
 
-            // Download file
+                        if (artifactPrefix != null) {
+                            Path parent = destination.getParent();
+                            final String keepName = fileName;         // retain current file
+                            final String prefix = artifactPrefix;     // strict match prefix
+                            try (var stream = Files.list(parent)) {
+                                stream.filter(p -> {
+                                    String n = p.getFileName().toString();
+                                    return n.endsWith(".jar") &&
+                                           !n.equals(keepName) &&
+                                           n.startsWith(prefix); // same artifact id, different version
+                                }).forEach(p -> {
+                                    try {
+                                        Files.deleteIfExists(p);
+                                        System.out.println("  Removed older version: " + p.getFileName());
+                                    } catch (Exception ignore) {}
+                                });
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ignore) {}
+
+            System.out.println("  Downloading from: " + downloadUrl);
             Files.createDirectories(destination.getParent());
             URL url = new URL(downloadUrl);
-            
             try (InputStream in = url.openStream()) {
                 Files.copy(in, destination, StandardCopyOption.REPLACE_EXISTING);
             }
@@ -105,17 +149,18 @@ public class FileDownloader {
                     System.err.println("  WARNING: Hash mismatch for " + entry.name);
                     System.err.println("  Expected: " + expectedHash);
                     System.err.println("  Got:      " + actualHash);
+                    // Still count as success for availability; pack authors can rely on hash warnings
                 }
             }
 
             System.out.println("  ✓ SUCCESS: " + entry.name);
-            return true;
+            return Result.SUCCESS;
 
         } catch (Exception e) {
             System.err.println("  ✗ FAILED: " + entry.name);
             System.err.println("  Error: " + e.getMessage());
             e.printStackTrace();
-            return false;
+            return Result.FAILED;
         }
     }
 
@@ -123,34 +168,22 @@ public class FileDownloader {
         String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
         Path backupDir = file.getParent().resolve(".modcontroller-backups");
         Files.createDirectories(backupDir);
-
         String filename = file.getFileName().toString();
         Path backupPath = backupDir.resolve(filename + "." + timestamp + ".backup");
-
         Files.copy(file, backupPath, StandardCopyOption.REPLACE_EXISTING);
         System.out.println("  Backed up existing file to: " + backupPath.getFileName());
     }
 
     private String calculateHash(Path file, String algorithm) throws Exception {
         MessageDigest digest = MessageDigest.getInstance(algorithm);
-        
         try (InputStream in = Files.newInputStream(file)) {
             byte[] buffer = new byte[8192];
             int read;
-            while ((read = in.read(buffer)) > 0) {
-                digest.update(buffer, 0, read);
-            }
+            while ((read = in.read(buffer)) > 0) digest.update(buffer, 0, read);
         }
-
         byte[] hashBytes = digest.digest();
         StringBuilder sb = new StringBuilder();
-        for (byte b : hashBytes) {
-            sb.append(String.format("%02x", b));
-        }
+        for (byte b : hashBytes) sb.append(String.format("%02x", b));
         return sb.toString();
-    }
-
-    public interface ProgressCallback {
-        void onStatusUpdate(String status);
     }
 }

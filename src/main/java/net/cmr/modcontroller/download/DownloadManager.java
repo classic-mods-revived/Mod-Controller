@@ -11,6 +11,17 @@ import java.util.List;
 public class DownloadManager {
     private static final String MARKER_FILE = "config/modcontroller.marker";
 
+    public static final class RunResult {
+        public final int success;
+        public final int failed;
+        public final int skipped;
+        public RunResult(int success, int failed, int skipped) {
+            this.success = success;
+            this.failed = failed;
+            this.skipped = skipped;
+        }
+    }
+
     private final Path gameDir;
     private final ModConfig config;
     private final FileDownloader downloader;
@@ -56,12 +67,12 @@ public class DownloadManager {
         return true;
     }
 
-    public int runDownloads() {
+    public RunResult runDownloads() {
         try {
             System.out.println("ModController: runDownloads() called");
             reportProgress("Initializing", 5, "Starting download process...");
-            Thread.sleep(100); // Give UI time to update
-            
+            Thread.sleep(100);
+
             System.out.println("========================================");
             System.out.println("MOD CONTROLLER: Starting downloads");
             System.out.println("========================================");
@@ -74,67 +85,58 @@ public class DownloadManager {
                 System.out.println("ModController: No enabled downloads in config.");
                 createMarker();
                 reportProgress("Complete", 100, "No downloads configured");
-                Thread.sleep(1000);
-                return 0;
+                Thread.sleep(300);
+                return new RunResult(0, 0, 0);
             }
 
-            // Start progress tracking
             ProgressTracker.startDownload(files.size());
-
             System.out.println("ModController: " + files.size() + " file(s) queued for download");
             System.out.println("========================================");
-            
-            reportProgress("Preparing", 10, "Loading file list...");
-            Thread.sleep(200); // Give UI time to update
 
             int successCount = 0;
+            int failCount = 0;
+            int skipCount = 0;
 
             for (int i = 0; i < files.size(); i++) {
                 DownloadEntry entry = files.get(i);
-                
-                // Calculate progress (start at 10%, end at 90%, leave 10% for completion)
+
                 int overallProgress = 10 + (int) ((i / (float) files.size()) * 80);
-                
-                // Update progress tracker
                 ProgressTracker.updateFile(i + 1, entry.name);
-                
                 String progressMessage = String.format("[%d/%d] %s", i + 1, files.size(), entry.name);
-                System.out.println("\nModController: Reporting progress: " + overallProgress + "% - " + progressMessage);
                 reportProgress("Downloading Files", overallProgress, progressMessage);
-                Thread.sleep(100); // Give UI time to update
-                
+
                 System.out.println(String.format("\n[%d/%d] %s", i + 1, files.size(), entry.name));
 
-                boolean success = downloader.downloadEntry(entry, gameDir);
-
-                if (success) {
-                    successCount++;
+                FileDownloader.Result result = downloader.downloadEntry(entry, gameDir);
+                switch (result) {
+                    case SUCCESS -> successCount++;
+                    case FAILED -> failCount++;
+                    case SKIPPED -> skipCount++;
                 }
 
-                // Delay so progress is visible
-                Thread.sleep(400);
+                Thread.sleep(150);
             }
 
             reportProgress("Complete", 100,
-                String.format("Downloaded %d/%d files", successCount, files.size()));
-            Thread.sleep(100); // Give UI time to update
+                String.format("Downloaded %d/%d files (%d skipped, %d failed)",
+                    successCount, files.size(), skipCount, failCount));
 
             System.out.println("\n========================================");
-            System.out.println("DOWNLOADS COMPLETE: " + successCount + "/" + files.size() + " successful");
+            System.out.println("DOWNLOADS COMPLETE: success=" + successCount +
+                               " failed=" + failCount + " skipped=" + skipCount);
             System.out.println("========================================");
 
-            // Finish progress tracking
             ProgressTracker.finish();
-
             createMarker();
-            return successCount;
+
+            return new RunResult(successCount, failCount, skipCount);
 
         } catch (Exception e) {
             System.err.println("ModController: ERROR during downloads");
             e.printStackTrace();
             reportProgress("Error", 0, "Download failed: " + e.getMessage());
             ProgressTracker.finish();
-            return 0;
+            return new RunResult(0, 1, 0); // signal a failure occurred
         }
     }
 

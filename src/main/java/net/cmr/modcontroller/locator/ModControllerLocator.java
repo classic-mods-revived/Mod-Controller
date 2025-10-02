@@ -85,31 +85,36 @@ public class ModControllerLocator implements IModFileCandidateLocator {
             };
             dm.setProgressCallback(cb);
 
-            int downloaded = dm.runDownloads();
-            int total = config.downloads.stream().filter(e -> e.enabled).toList().size();
-            int failedCount = total - downloaded;
+            DownloadManager.RunResult result = dm.runDownloads();
+            int failedCount = result.failed;
+            int successCount = result.success;
+            int skippedCount = result.skipped;
 
             if (failedCount > 0) {
-                // Signal failure with a prompt
                 writeProgress(progressPath, "Failed", 100,
-                        "One or more downloads failed. Continue without them or exit?", false, "prompt");
+                        String.format("%d download(s) failed. Continue without them or exit?", failedCount),
+                        false, "prompt");
 
-                // Wait for user choice in command file
                 String decision = waitForDecision(commandPath);
                 if ("exit".equalsIgnoreCase(decision)) {
                     writeProgress(progressPath, "Exiting", 100, "Closing the game...", true, null);
                     Thread.sleep(300);
                     System.exit(1);
                 } else {
-                    writeProgress(progressPath, "Continuing", 100, "Continuing without failed downloads.", true, null);
+                    writeProgress(progressPath, "Continuing", 100,
+                            String.format("Continuing without %d failed download(s).", failedCount),
+                            true, null);
                 }
             } else {
-                writeProgress(progressPath, "Complete", 100, "Downloaded " + downloaded + " file(s)", true, null);
+                writeProgress(progressPath, "Complete", 100,
+                        String.format("Downloaded %d file(s) (%d skipped)", successCount, skippedCount),
+                        true, null);
                 Thread.sleep(200);
             }
 
             System.out.println("========================================");
-            System.out.println("MOD CONTROLLER: Downloaded " + downloaded + " of " + total + " file(s)");
+            System.out.println("MOD CONTROLLER: success=" + successCount +
+                               " failed=" + failedCount + " skipped=" + skippedCount);
             System.out.println("No restart required!");
             System.out.println("========================================");
 
