@@ -25,14 +25,12 @@ public class FileDownloader {
         this.backupReplacedFiles = backupReplacedFiles;
     }
 
-    public boolean downloadEntry(DownloadEntry entry, Path gameDir, ProgressCallback callback) {
+    public boolean downloadEntry(DownloadEntry entry, Path gameDir) {
         try {
             if (!entry.enabled) {
                 System.out.println("  Skipping (disabled): " + entry.name);
                 return false;
             }
-
-            callback.onStatusUpdate("Resolving: " + entry.name);
 
             String downloadUrl;
             String expectedHash = null;
@@ -90,7 +88,6 @@ public class FileDownloader {
                 }
             }
 
-            callback.onStatusUpdate("Downloading: " + entry.name);
             System.out.println("  Downloading from: " + downloadUrl);
 
             // Download file
@@ -108,19 +105,16 @@ public class FileDownloader {
                     System.err.println("  WARNING: Hash mismatch for " + entry.name);
                     System.err.println("  Expected: " + expectedHash);
                     System.err.println("  Got:      " + actualHash);
-                    // Don't fail the download, just warn
                 }
             }
 
             System.out.println("  ✓ SUCCESS: " + entry.name);
-            callback.onStatusUpdate("✓ " + entry.name);
             return true;
 
         } catch (Exception e) {
             System.err.println("  ✗ FAILED: " + entry.name);
             System.err.println("  Error: " + e.getMessage());
             e.printStackTrace();
-            callback.onStatusUpdate("✗ Failed: " + entry.name);
             return false;
         }
     }

@@ -14,20 +14,26 @@ public class DownloadManager {
     private final Path gameDir;
     private final ModConfig config;
     private final FileDownloader downloader;
-
-    private volatile String currentStatus = "Initializing...";
-    private volatile int currentFileIndex = 0;
-    private volatile int totalFiles = 0;
-    private volatile boolean isDownloading = false;
+    private ProgressCallback progressCallback;
 
     public DownloadManager(Path gameDir, ModConfig config) {
+        this(gameDir, config, null);
+    }
+
+    public DownloadManager(Path gameDir, ModConfig config, ProgressCallback progressCallback) {
         this.gameDir = gameDir;
         this.config = config;
+        this.progressCallback = progressCallback;
         this.downloader = new FileDownloader(
             config.modrinthApiKey,
             config.curseforgeApiKey,
             config.backupReplacedFiles
         );
+    }
+
+    public void setProgressCallback(ProgressCallback callback) {
+        this.progressCallback = callback;
+        System.out.println("ModController: Progress callback set!");
     }
 
     public boolean shouldRunDownloads() {
@@ -52,6 +58,10 @@ public class DownloadManager {
 
     public int runDownloads() {
         try {
+            System.out.println("ModController: runDownloads() called");
+            reportProgress("Initializing", 5, "Starting download process...");
+            Thread.sleep(100); // Give UI time to update
+            
             System.out.println("========================================");
             System.out.println("MOD CONTROLLER: Starting downloads");
             System.out.println("========================================");
@@ -63,49 +73,85 @@ public class DownloadManager {
             if (files.isEmpty()) {
                 System.out.println("ModController: No enabled downloads in config.");
                 createMarker();
+                reportProgress("Complete", 100, "No downloads configured");
+                Thread.sleep(1000);
                 return 0;
             }
 
-            totalFiles = files.size();
-            isDownloading = true;
+            // Start progress tracking
+            ProgressTracker.startDownload(files.size());
 
-            System.out.println("ModController: " + totalFiles + " file(s) queued for download");
+            System.out.println("ModController: " + files.size() + " file(s) queued for download");
             System.out.println("========================================");
+            
+            reportProgress("Preparing", 10, "Loading file list...");
+            Thread.sleep(200); // Give UI time to update
 
             int successCount = 0;
 
-            for (int i = 0; i < totalFiles; i++) {
-                currentFileIndex = i + 1;
+            for (int i = 0; i < files.size(); i++) {
                 DownloadEntry entry = files.get(i);
+                
+                // Calculate progress (start at 10%, end at 90%, leave 10% for completion)
+                int overallProgress = 10 + (int) ((i / (float) files.size()) * 80);
+                
+                // Update progress tracker
+                ProgressTracker.updateFile(i + 1, entry.name);
+                
+                String progressMessage = String.format("[%d/%d] %s", i + 1, files.size(), entry.name);
+                System.out.println("\nModController: Reporting progress: " + overallProgress + "% - " + progressMessage);
+                reportProgress("Downloading Files", overallProgress, progressMessage);
+                Thread.sleep(100); // Give UI time to update
+                
+                System.out.println(String.format("\n[%d/%d] %s", i + 1, files.size(), entry.name));
 
-                System.out.println(String.format("\n[%d/%d] %s", i + 1, totalFiles, entry.name));
-
-                boolean success = downloader.downloadEntry(entry, gameDir, status -> {
-                    currentStatus = status;
-                });
+                boolean success = downloader.downloadEntry(entry, gameDir);
 
                 if (success) {
                     successCount++;
                 }
 
-                // Small delay so progress is visible
-                Thread.sleep(300);
+                // Delay so progress is visible
+                Thread.sleep(400);
             }
 
+            reportProgress("Complete", 100,
+                String.format("Downloaded %d/%d files", successCount, files.size()));
+            Thread.sleep(100); // Give UI time to update
+
             System.out.println("\n========================================");
-            System.out.println("DOWNLOADS COMPLETE: " + successCount + "/" + totalFiles + " successful");
+            System.out.println("DOWNLOADS COMPLETE: " + successCount + "/" + files.size() + " successful");
             System.out.println("========================================");
 
-            createMarker();
-            isDownloading = false;
+            // Finish progress tracking
+            ProgressTracker.finish();
 
+            createMarker();
             return successCount;
 
         } catch (Exception e) {
             System.err.println("ModController: ERROR during downloads");
             e.printStackTrace();
-            isDownloading = false;
+            reportProgress("Error", 0, "Download failed: " + e.getMessage());
+            ProgressTracker.finish();
             return 0;
+        }
+    }
+
+    private void reportProgress(String phase, int progress, String message) {
+        System.out.println(String.format("ModController: reportProgress called - phase='%s', progress=%d%%, message='%s', callback=%s",
+            phase, progress, message, (progressCallback != null ? "SET" : "NULL")));
+        
+        if (progressCallback != null) {
+            try {
+                progressCallback.onProgress(phase, progress, message);
+                System.out.println("ModController: Progress callback executed successfully");
+            } catch (Exception e) {
+                System.err.println("ModController: Error in progress callback: " + e.getMessage());
+                e.printStackTrace();
+            }
+        } else {
+            System.out.println("ModController: Progress callback is NULL - not reporting");
         }
     }
 
@@ -121,9 +167,8 @@ public class DownloadManager {
         }
     }
 
-    // Getters for progress tracking
-    public String getCurrentStatus() { return currentStatus; }
-    public int getCurrentFileIndex() { return currentFileIndex; }
-    public int getTotalFiles() { return totalFiles; }
-    public boolean isDownloading() { return isDownloading; }
+    @FunctionalInterface
+    public interface ProgressCallback {
+        void onProgress(String phase, int progressPercent, String message);
+    }
 }
