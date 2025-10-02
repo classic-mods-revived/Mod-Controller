@@ -32,8 +32,8 @@ public class ModControllerLocator implements IModFileCandidateLocator {
         System.out.println("MOD CONTROLLER LOCATOR: Running BEFORE mod discovery");
         System.out.println("========================================");
 
-        Process helper = null;
         Path progressFile = null;
+        Path commandFile = null;
         try {
             Path gameDir = getGameDirectory();
             ModConfig config = ModConfig.load(gameDir);
@@ -44,19 +44,24 @@ public class ModControllerLocator implements IModFileCandidateLocator {
                 return;
             }
 
-            // Progress file path
             progressFile = gameDir.resolve("modcontroller_progress.json");
-            writeProgress(progressFile, "Initializing", 0, "Starting download process...", false);
+            commandFile = gameDir.resolve("modcontroller_command.json");
+            safeDelete(commandFile);
+
+            writeProgress(progressFile, "Initializing", 0, "Starting download process...", false, null);
 
             // Launch helper JVM
-            helper = launchHelper(progressFile);
+            Process helper = launchHelper(progressFile.toAbsolutePath().toString(), commandFile.toAbsolutePath().toString());
             System.out.println("ModController: Progress helper launched");
 
-            // Attach progress callback that writes to the file (read by helper)
-            final Path progressPath = progressFile; // make effectively final for lambda
+            final Path progressPath = progressFile;
+            final Path commandPath = commandFile;
+
+            // Track failures
+            List<String> failed = new ArrayList<>();
             DownloadManager.ProgressCallback cb = (phase, progressPercent, message) -> {
                 try {
-                    writeProgress(progressPath, phase, progressPercent, message, false);
+                    writeProgress(progressPath, phase, progressPercent, message, false, null);
                 } catch (Exception e) {
                     System.err.println("ModController: Failed to write progress: " + e.getMessage());
                 }
@@ -64,13 +69,31 @@ public class ModControllerLocator implements IModFileCandidateLocator {
             dm.setProgressCallback(cb);
 
             int downloaded = dm.runDownloads();
+            int total = config.downloads.stream().filter(e -> e.enabled).toList().size();
+            int failedCount = total - downloaded;
 
-            // Finalize
-            writeProgress(progressFile, "Complete", 100, "Downloaded " + downloaded + " file(s)", true);
-            Thread.sleep(250);
+            if (failedCount > 0) {
+                // Signal failure with a prompt
+                writeProgress(progressPath, "Failed", 100,
+                        "One or more downloads failed. Continue without them or exit?", false, "prompt");
+
+                // Wait for user choice in command file
+                String decision = waitForDecision(commandPath);
+                if ("exit".equalsIgnoreCase(decision)) {
+                    writeProgress(progressPath, "Exiting", 100, "Closing the game...", true, null);
+                    Thread.sleep(300);
+                    System.exit(1);
+                } else {
+                    writeProgress(progressPath, "Continuing", 100, "Continuing without failed downloads.", true, null);
+                }
+            } else {
+                // All good
+                writeProgress(progressPath, "Complete", 100, "Downloaded " + downloaded + " file(s)", true, null);
+                Thread.sleep(200);
+            }
 
             System.out.println("========================================");
-            System.out.println("MOD CONTROLLER: Downloaded " + downloaded + " file(s)");
+            System.out.println("MOD CONTROLLER: Downloaded " + downloaded + " of " + total + " file(s)");
             System.out.println("No restart required!");
             System.out.println("========================================");
 
@@ -79,43 +102,61 @@ public class ModControllerLocator implements IModFileCandidateLocator {
             e.printStackTrace();
             try {
                 if (progressFile != null) {
-                    writeProgress(progressFile, "Error", 0, e.getMessage(), true);
+                    writeProgress(progressFile, "Error", 0, e.getMessage(), true, null);
                 }
             } catch (Exception ignored) {}
-        } finally {
-            // best-effort: allow helper to exit on its own reading "done": true
         }
     }
 
-    private void writeProgress(Path progressFile, String phase, int progress, String message, boolean done) throws Exception {
+    private void writeProgress(Path progressFile, String phase, int progress, String message, boolean done, String mode) throws Exception {
         Map<String, Object> map = new HashMap<>();
         map.put("phase", phase);
         map.put("progress", progress);
         map.put("message", message);
         map.put("done", done);
+        if (mode != null) map.put("mode", mode); // when "prompt", UI shows buttons
         Files.writeString(progressFile, GSON.toJson(map));
     }
 
-    private Process launchHelper(Path progressFile) throws Exception {
+    private String waitForDecision(Path commandFile) throws Exception {
+        // Wait until commandFile contains {"action":"continue"} or {"action":"exit"}
+        long start = System.currentTimeMillis();
+        while (true) {
+            if (Files.exists(commandFile)) {
+                try {
+                    String json = Files.readString(commandFile);
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> m = GSON.fromJson(json, Map.class);
+                    Object a = m != null ? m.get("action") : null;
+                    if (a != null) return String.valueOf(a);
+                } catch (Exception ignored) {}
+            }
+            // avoid infinite stall: but requirement is to stall until user decides
+            Thread.sleep(100);
+            // optional: add timeout if desired
+            if (System.getProperty("modcontroller.failTimeout") != null) {
+                long maxMs = Long.parseLong(System.getProperty("modcontroller.failTimeout"));
+                if (System.currentTimeMillis() - start > maxMs) return "continue";
+            }
+        }
+    }
+
+    private Process launchHelper(String progressFilePath, String commandFilePath) throws Exception {
         String javaHome = System.getProperty("java.home");
         String javaBin = javaHome + File.separator + "bin" + File.separator + "java";
-
-        // Build classpath (reuse current)
         String classpath = System.getProperty("java.class.path");
 
         List<String> cmd = new ArrayList<>();
         cmd.add(javaBin);
-        // Strip agents to avoid moddev/IDE agents leaking to child
-        for (String arg : getSafeJvmArgs()) {
-            cmd.add(arg);
-        }
+        for (String arg : getSafeJvmArgs()) cmd.add(arg);
         cmd.add("-cp");
         cmd.add(classpath);
         cmd.add(ProgressUiHelper.class.getName());
-        cmd.add(progressFile.toAbsolutePath().toString());
+        cmd.add(progressFilePath);
+        cmd.add(commandFilePath);
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.inheritIO(); // helpful logs if needed
+        pb.inheritIO();
         pb.directory(new File(System.getProperty("user.dir")));
         return pb.start();
     }
@@ -134,6 +175,10 @@ public class ModControllerLocator implements IModFileCandidateLocator {
         } catch (Exception e) {
             return Collections.emptyList();
         }
+    }
+
+    private void safeDelete(Path p) {
+        try { if (p != null && Files.exists(p)) Files.delete(p); } catch (Exception ignored) {}
     }
 
     private Path getGameDirectory() {

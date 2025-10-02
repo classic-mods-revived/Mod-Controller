@@ -10,7 +10,7 @@ import java.nio.file.Path;
 
 /**
  * Standalone process: shows a Swing window and polls a JSON file for progress data.
- * Run from the locator via ProcessBuilder to avoid LWJGL/Swing conflicts.
+ * Also writes user decisions to a command file when prompted.
  */
 public class ProgressUiHelper {
 
@@ -21,17 +21,23 @@ public class ProgressUiHelper {
         String message;
         Integer progress;
         Boolean done;
+        String mode; // add this back so we can detect "prompt" mode
+    }
+
+    private static class CommandPayload {
+        String action; // "continue" or "exit"
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length < 1) return;
+        if (args.length < 2) return;
         Path progressFile = Path.of(args[0]);
+        Path commandFile = Path.of(args[1]);
 
         System.setProperty("java.awt.headless", "false");
 
         JFrame frame = new JFrame("Mod Controller");
         frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
-        frame.setSize(520, 220);
+        frame.setSize(520, 260);
         frame.setResizable(false);
         frame.setLocationRelativeTo(null);
         frame.setAlwaysOnTop(true);
@@ -65,6 +71,20 @@ public class ProgressUiHelper {
         detail.setAlignmentX(Component.CENTER_ALIGNMENT);
         detail.setForeground(new Color(200, 200, 200));
         panel.add(detail);
+        panel.add(Box.createRigidArea(new Dimension(0, 10)));
+
+        JPanel buttons = new JPanel();
+        buttons.setOpaque(false);
+        JButton continueBtn = new JButton("Continue Anyway");
+        JButton exitBtn = new JButton("Exit Game");
+        buttons.add(continueBtn);
+        buttons.add(exitBtn);
+        buttons.setVisible(false);
+        panel.add(buttons);
+
+        // button actions
+        continueBtn.addActionListener(e -> writeDecision(commandFile, "continue"));
+        exitBtn.addActionListener(e -> writeDecision(commandFile, "exit"));
 
         frame.add(panel);
         frame.setVisible(true);
@@ -85,19 +105,19 @@ public class ProgressUiHelper {
                 final String message = p.message != null ? p.message : "";
                 final int prog = p.progress != null ? Math.max(0, Math.min(100, p.progress)) : 0;
                 final boolean done = p.done != null && p.done;
+                final boolean prompt = p.mode != null && "prompt".equalsIgnoreCase(p.mode);
 
                 SwingUtilities.invokeLater(() -> {
                     status.setText(phase);
                     bar.setValue(prog);
                     bar.setString(prog + "%");
                     detail.setText(message);
+                    buttons.setVisible(prompt);
                 });
 
                 if (done) break;
 
-            } catch (IOException ignored) {
-                // file may be in write; retry
-            }
+            } catch (Exception ignored) {}
             Thread.sleep(100);
         }
 
@@ -105,5 +125,15 @@ public class ProgressUiHelper {
             frame.setVisible(false);
             frame.dispose();
         });
+    }
+
+    private static void writeDecision(Path commandFile, String action) {
+        try {
+            CommandPayload cmd = new CommandPayload();
+            cmd.action = action;
+            Files.writeString(commandFile, GSON.toJson(cmd));
+        } catch (Exception e) {
+            // ignore
+        }
     }
 }
