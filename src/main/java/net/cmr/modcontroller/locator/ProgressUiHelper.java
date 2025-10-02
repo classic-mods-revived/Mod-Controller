@@ -21,7 +21,7 @@ public class ProgressUiHelper {
         String message;
         Integer progress;
         Boolean done;
-        String mode; // add this back so we can detect "prompt" mode
+        String mode; // null, "prompt", or "consent"
     }
 
     private static class CommandPayload {
@@ -77,14 +77,25 @@ public class ProgressUiHelper {
         buttons.setOpaque(false);
         JButton continueBtn = new JButton("Continue Anyway");
         JButton exitBtn = new JButton("Exit Game");
+        JButton acceptBtn = new JButton("I Consent");
+        JButton declineBtn = new JButton("Exit");
         buttons.add(continueBtn);
         buttons.add(exitBtn);
+        buttons.add(acceptBtn);
+        buttons.add(declineBtn);
         buttons.setVisible(false);
+        // default hidden pairs
+        continueBtn.setVisible(false);
+        exitBtn.setVisible(false);
+        acceptBtn.setVisible(false);
+        declineBtn.setVisible(false);
         panel.add(buttons);
 
         // button actions
         continueBtn.addActionListener(e -> writeDecision(commandFile, "continue"));
         exitBtn.addActionListener(e -> writeDecision(commandFile, "exit"));
+        acceptBtn.addActionListener(e -> writeDecision(commandFile, "accept"));
+        declineBtn.addActionListener(e -> writeDecision(commandFile, "exit"));
 
         frame.add(panel);
         frame.setVisible(true);
@@ -106,13 +117,20 @@ public class ProgressUiHelper {
                 final int prog = p.progress != null ? Math.max(0, Math.min(100, p.progress)) : 0;
                 final boolean done = p.done != null && p.done;
                 final boolean prompt = p.mode != null && "prompt".equalsIgnoreCase(p.mode);
+                final boolean consent = p.mode != null && "consent".equalsIgnoreCase(p.mode);
 
                 SwingUtilities.invokeLater(() -> {
                     status.setText(phase);
                     bar.setValue(prog);
                     bar.setString(prog + "%");
                     detail.setText(message);
-                    buttons.setVisible(prompt);
+
+                    // toggle button sets
+                    buttons.setVisible(prompt || consent);
+                    continueBtn.setVisible(prompt);
+                    exitBtn.setVisible(prompt);
+                    acceptBtn.setVisible(consent);
+                    declineBtn.setVisible(consent);
                 });
 
                 if (done) break;

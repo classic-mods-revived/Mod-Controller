@@ -39,26 +39,43 @@ public class ModControllerLocator implements IModFileCandidateLocator {
             ModConfig config = ModConfig.load(gameDir);
             DownloadManager dm = new DownloadManager(gameDir, config);
 
+            progressFile = gameDir.resolve("modcontroller_progress.json");
+            commandFile = gameDir.resolve("modcontroller_command.json");
+            safeDelete(commandFile);
+
+            // Consent gate
+            if (config.requireConsentBeforeDownloads) {
+                writeProgress(progressFile, "Consent Needed", 0,
+                        "This modpack will download files required by the author. Do you consent?", false, "consent");
+
+                Process helper = launchHelper(progressFile.toAbsolutePath().toString(), commandFile.toAbsolutePath().toString());
+                System.out.println("ModController: Consent helper launched");
+
+                String consentDecision = waitForDecision(commandFile);
+                if (!"accept".equalsIgnoreCase(consentDecision)) {
+                    writeProgress(progressFile, "Exiting", 0, "Consent not granted. Exiting...", true, null);
+                    Thread.sleep(300);
+                    System.exit(0);
+                }
+                writeProgress(progressFile, "Consent Granted", 0, "Preparing downloads...", false, null);
+                // reset command file for later prompts (e.g., failures)
+                safeDelete(commandFile);
+            }
+
             if (!dm.shouldRunDownloads()) {
                 System.out.println("ModController: No downloads needed");
                 return;
             }
 
-            progressFile = gameDir.resolve("modcontroller_progress.json");
-            commandFile = gameDir.resolve("modcontroller_command.json");
-            safeDelete(commandFile);
-
             writeProgress(progressFile, "Initializing", 0, "Starting download process...", false, null);
 
-            // Launch helper JVM
+            // Launch helper JVM for progress/failure prompts
             Process helper = launchHelper(progressFile.toAbsolutePath().toString(), commandFile.toAbsolutePath().toString());
             System.out.println("ModController: Progress helper launched");
 
             final Path progressPath = progressFile;
             final Path commandPath = commandFile;
 
-            // Track failures
-            List<String> failed = new ArrayList<>();
             DownloadManager.ProgressCallback cb = (phase, progressPercent, message) -> {
                 try {
                     writeProgress(progressPath, phase, progressPercent, message, false, null);
@@ -87,7 +104,6 @@ public class ModControllerLocator implements IModFileCandidateLocator {
                     writeProgress(progressPath, "Continuing", 100, "Continuing without failed downloads.", true, null);
                 }
             } else {
-                // All good
                 writeProgress(progressPath, "Complete", 100, "Downloaded " + downloaded + " file(s)", true, null);
                 Thread.sleep(200);
             }

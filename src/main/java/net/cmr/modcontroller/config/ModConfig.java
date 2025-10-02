@@ -26,6 +26,9 @@ public class ModConfig {
     @SerializedName("backup_replaced_files")
     public boolean backupReplacedFiles = true;
 
+    @SerializedName("require_consent_before_downloads")
+    public boolean requireConsentBeforeDownloads = true;
+
     @SerializedName("modrinth_api_key")
     public String modrinthApiKey = ""; // Optional, for rate limit increases
 
@@ -69,6 +72,7 @@ public class ModConfig {
         config.downloadOnFirstLaunchOnly = true;
         config.checkForUpdates = true;
         config.backupReplacedFiles = true;
+        config.requireConsentBeforeDownloads = true;
 
         // Example entries (commented out by having them disabled)
         DownloadEntry urlExample = new DownloadEntry(
