@@ -98,38 +98,31 @@ public class FileDownloader {
             }
 
             // Remove older versions if destination folder is mods and target looks like a mod jar
-            // Safer heuristic: keep full artifact id prefix (everything before the last '-' that precedes version),
-            // so 'ftb-teams-neoforge-2101.1.4.jar' => artifactPrefix 'ftb-teams-neoforge-'
+            // Safer heuristic: compute a stable "base key" by stripping trailing classifier(s) and version block
             try {
                 if (destination.getParent().getFileName().toString().equalsIgnoreCase("mods")) {
                     String fileName = destination.getFileName().toString();
                     if (fileName.endsWith(".jar")) {
-                        String artifactPrefix = fileName;
-                        int lastDash = artifactPrefix.lastIndexOf('-');
-                        if (lastDash > 0) {
-                            artifactPrefix = artifactPrefix.substring(0, lastDash + 1); // include trailing '-'
-                        } else {
-                            // no dash? don't attempt cleanup
-                            artifactPrefix = null;
-                        }
 
-                        if (artifactPrefix != null) {
-                            Path parent = destination.getParent();
-                            final String keepName = fileName;         // retain current file
-                            final String prefix = artifactPrefix;     // strict match prefix
-                            try (var stream = Files.list(parent)) {
-                                stream.filter(p -> {
-                                    String n = p.getFileName().toString();
-                                    return n.endsWith(".jar") &&
-                                           !n.equals(keepName) &&
-                                           n.startsWith(prefix); // same artifact id, different version
-                                }).forEach(p -> {
-                                    try {
-                                        Files.deleteIfExists(p);
-                                        System.out.println("  Removed older version: " + p.getFileName());
-                                    } catch (Exception ignore) {}
-                                });
-                            }
+                        // Compute base key for the new file
+                        String baseKey = computeJarBaseKey(fileName);
+
+                        Path parent = destination.getParent();
+                        final String keepName = fileName;
+
+                        try (var stream = Files.list(parent)) {
+                            stream.filter(p -> {
+                                String n = p.getFileName().toString();
+                                if (!n.endsWith(".jar")) return false;
+                                if (n.equals(keepName)) return false;
+                                // Delete any other JAR whose computed base key matches
+                                return computeJarBaseKey(n).equalsIgnoreCase(baseKey);
+                            }).forEach(p -> {
+                                try {
+                                    Files.deleteIfExists(p);
+                                    System.out.println("  Removed older version: " + p.getFileName());
+                                } catch (Exception ignore) {}
+                            });
                         }
                     }
                 }
@@ -162,6 +155,36 @@ public class FileDownloader {
             e.printStackTrace();
             return Result.FAILED;
         }
+    }
+
+    // Heuristic to get a stable artifact "base key" from a mod jar name.
+    // Examples:
+    //  twilightforest-1.21.1-4.7.3094-universal.jar -> twilightforest
+    //  twilightforest-1.21.1-4.7.3196-universal.jar -> twilightforest
+    //  ftb-teams-neoforge-2101.1.4.jar -> ftb-teams-neoforge
+    //  architectury-13.0.8-neoforge.jar -> architectury
+    private static String computeJarBaseKey(String fileName) {
+        String name = fileName;
+        if (name.toLowerCase().endsWith(".jar")) {
+            name = name.substring(0, name.length() - 4);
+        }
+
+        // Strip common trailing classifiers
+        // e.g., "-universal", "-neoforge", "-fabric", "-forge"
+        name = name.replaceFirst("-(universal|neoforge|fabric|forge)$", "");
+
+        // Strip trailing version segment (dash followed by digits/dots and optional extra digits groups)
+        // e.g., "-1.21.1-4.7.3094" or "-2101.1.4"
+        name = name.replaceFirst("-\\d[\\d.]*([_-]\\d[\\d.]*)*$", "");
+
+        // If still contains a Minecraft version segment in the middle (e.g., modid-1.21.1-xyz),
+        // strip that as well.
+        name = name.replaceFirst("-\\d+\\.\\d+(\\.\\d+)?($|-.+)", "");
+
+        // Final safety: collapse any trailing dashes
+        while (name.endsWith("-")) name = name.substring(0, name.length() - 1);
+
+        return name;
     }
 
     private void backupFile(Path file) throws IOException {
