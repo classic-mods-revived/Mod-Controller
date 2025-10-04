@@ -51,51 +51,71 @@ public class ModControllerLocator implements IModFileCandidateLocator {
             commandFile = mcDir.resolve("modcontroller_command.json");
             safeDelete(commandFile);
 
+            // Detect logical environment (client vs dedicated server)
+            final boolean isClientEnv = isClientEnvironment();
+
             // Consent gate
             if (config.requireConsentBeforeDownloads) {
-                writeProgress(progressFile, "Consent Needed", 0,
-                        "This modpack will download files required by the author. Do you consent?", false, "consent");
+                if (isClientEnv) {
+                    System.out.println("Mod Controller: Consent required (client). Opening consent window...");
+                    writeProgress(progressFile, "Consent Needed", 0,
+                            "This modpack will download files required by the author. Do you consent?", false, "consent");
 
-                if (uiProcess == null || !uiProcess.isAlive()) {
-                    uiProcess = launchHelper(progressFile.toAbsolutePath().toString(), commandFile.toAbsolutePath().toString());
-                    System.out.println("ModController: Consent helper launched");
-                }
+                    if (uiProcess == null || !uiProcess.isAlive()) {
+                        uiProcess = launchHelper(progressFile.toAbsolutePath().toString(), commandFile.toAbsolutePath().toString());
+                        System.out.println("Mod Controller: Consent helper launched");
+                    }
 
-                String consentDecision = waitForDecision(commandFile);
-                if (!"accept".equalsIgnoreCase(consentDecision)) {
-                    writeProgress(progressFile, "Exiting", 0, "Consent not granted. Exiting...", true, null);
-                    try { if (uiProcess != null && uiProcess.isAlive()) uiProcess.destroy(); } catch (Exception ignored) {}
-                    Thread.sleep(300);
-                    System.exit(0);
+                    String consentDecision = waitForDecision(commandFile);
+                    if (!"accept".equalsIgnoreCase(consentDecision)) {
+                        System.out.println("Mod Controller: Consent denied. Exiting.");
+                        writeProgress(progressFile, "Exiting", 0, "Consent not granted. Exiting...", true, null);
+                        try { if (uiProcess != null && uiProcess.isAlive()) uiProcess.destroy(); } catch (Exception ignored) {}
+                        Thread.sleep(300);
+                        System.exit(0);
+                    }
+                    System.out.println("Mod Controller: Consent granted. Preparing downloads...");
+                    writeProgress(progressFile, "Consent Granted", 0, "Preparing downloads...", false, null);
+                    safeDelete(commandFile);
+                } else {
+                    System.out.println("Mod Controller: This server will download required files. Do you consent? (y/n):");
+                    String decision = promptTerminalYesNo(
+                            "Mod Controller: This server will download required files. Do you consent? (y/n): ",
+                            /*defaultYes=*/false);
+                    if (!"y".equalsIgnoreCase(decision)) {
+                        System.out.println("Mod Controller: Consent not granted. Exiting...");
+                        System.exit(0);
+                    }
+                    System.out.println("Mod Controller: Consent granted. Preparing downloads...");
                 }
-                writeProgress(progressFile, "Consent Granted", 0, "Preparing downloads...", false, null);
-                safeDelete(commandFile);
             }
 
             if (!dm.shouldRunDownloads()) {
-                System.out.println("ModController: No downloads needed");
+                System.out.println("Mod Controller: No downloads needed");
                 try { if (uiProcess != null && uiProcess.isAlive()) uiProcess.destroy(); } catch (Exception ignored) {}
                 return;
             }
 
-            writeProgress(progressFile, "Initializing", 0, "Starting download process...", false, null);
-
-            if (uiProcess == null || !uiProcess.isAlive()) {
-                uiProcess = launchHelper(progressFile.toAbsolutePath().toString(), commandFile.toAbsolutePath().toString());
-                System.out.println("ModController: Progress helper launched");
-            }
-
-            final Path progressPath = progressFile;
-            final Path commandPath = commandFile;
-
-            DownloadManager.ProgressCallback cb = (phase, progressPercent, message) -> {
-                try {
-                    writeProgress(progressPath, phase, progressPercent, message, false, null);
-                } catch (Exception e) {
-                    System.err.println("ModController: Failed to write progress: " + e.getMessage());
+            if (isClientEnv) {
+                System.out.println("Mod Controller: Initializing downloads (client)...");
+                writeProgress(progressFile, "Initializing", 0, "Starting download process...", false, null);
+                if (uiProcess == null || !uiProcess.isAlive()) {
+                    uiProcess = launchHelper(progressFile.toAbsolutePath().toString(), commandFile.toAbsolutePath().toString());
+                    System.out.println("Mod Controller: Progress helper launched");
                 }
-            };
-            dm.setProgressCallback(cb);
+                final Path progressPath = progressFile;
+                DownloadManager.ProgressCallback cb = (phase, progressPercent, message) -> {
+                    try { writeProgress(progressPath, phase, progressPercent, message, false, null); }
+                    catch (Exception e) { System.err.println("Mod Controller: Failed to write progress: " + e.getMessage()); }
+                };
+                dm.setProgressCallback(cb);
+            } else {
+                System.out.println("Mod Controller: Initializing downloads (server)...");
+                DownloadManager.ProgressCallback cb = (phase, progressPercent, message) -> {
+                    System.out.println("Mod Controller: " + phase + " - " + message + " (" + progressPercent + "%)");
+                };
+                dm.setProgressCallback(cb);
+            }
 
             DownloadManager.RunResult result = dm.runDownloads();
             int failedCount = result.failed;
@@ -103,27 +123,49 @@ public class ModControllerLocator implements IModFileCandidateLocator {
             int skippedCount = result.skipped;
 
             if (failedCount > 0) {
-                writeProgress(progressPath, "Failed", 100,
-                        String.format("%d download(s) failed. Continue without them or exit?", failedCount),
-                        false, "prompt");
+                if (isClientEnv) {
+                    System.out.println("Mod Controller: One or more downloads failed (client). Prompting user...");
+                    writeProgress(progressFile, "Failed", 100,
+                            String.format("%d download(s) failed. Continue without them or exit?", failedCount),
+                            false, "prompt");
 
-                String decision = waitForDecision(commandPath);
-                if ("exit".equalsIgnoreCase(decision)) {
-                    writeProgress(progressPath, "Exiting", 100, "Closing the game...", true, null);
-                    try { if (uiProcess != null && uiProcess.isAlive()) uiProcess.destroy(); } catch (Exception ignored) {}
-                    Thread.sleep(300);
-                    System.exit(1);
+                    String decision = waitForDecision(commandFile);
+                    if ("exit".equalsIgnoreCase(decision)) {
+                        System.out.println("Mod Controller: User chose to exit due to failures.");
+                        writeProgress(progressFile, "Exiting", 100, "Closing the game...", true, null);
+                        try { if (uiProcess != null && uiProcess.isAlive()) uiProcess.destroy(); } catch (Exception ignored) {}
+                        Thread.sleep(300);
+                        System.exit(1);
+                    } else {
+                        System.out.println("Mod Controller: User chose to continue without failed downloads.");
+                        writeProgress(progressFile, "Continuing", 100,
+                                String.format("Continuing without %d failed download(s).", failedCount),
+                                true, null);
+                    }
                 } else {
-                    writeProgress(progressPath, "Continuing", 100,
-                            String.format("Continuing without %d failed download(s).", failedCount),
-                            true, null);
+                    System.out.println("Mod Controller: %d download(s) failed. Continue without them? (y = continue / n = exit): ");
+                    String decision = promptTerminalYesNo(
+                            String.format("Mod Controller: %d download(s) failed. Continue without them? (y = continue / n = exit): ", failedCount),
+                            /*defaultYes=*/true);
+                    if (!"y".equalsIgnoreCase(decision)) {
+                        System.out.println("Mod Controller: Exiting due to failed downloads.");
+                        System.exit(1);
+                    }
+                    System.out.println("Mod Controller: Continuing without failed downloads.");
                 }
             } else {
-                writeProgress(progressPath, "Complete", 100,
-                        String.format("Downloaded %d file(s) (%d skipped)", successCount, skippedCount),
-                        true, null);
+                if (isClientEnv) {
+                    System.out.println("Mod Controller: Downloads complete (client).");
+                    writeProgress(progressFile, "Complete", 100,
+                            String.format("Downloaded %d file(s) (%d skipped)", successCount, skippedCount),
+                            true, null);
+                } else {
+                    System.out.println("Mod Controller: Downloads complete (server).");
+                    System.out.println(String.format("Mod Controller: Downloaded %d file(s) (%d skipped).", successCount, skippedCount));
+                }
                 Thread.sleep(200);
             }
+
             try { if (uiProcess != null && uiProcess.isAlive()) uiProcess.destroy(); } catch (Exception ignored) {}
 
             System.out.println("========================================");
@@ -140,6 +182,63 @@ public class ModControllerLocator implements IModFileCandidateLocator {
                     writeProgress(progressFile, "Error", 0, e.getMessage(), true, null);
                 }
             } catch (Exception ignored) {}
+        }
+    }
+
+    // Detect if we are running on the client (graphics available) vs dedicated server.
+    // Heuristics: presence of GLFW/graphics system properties or absence of 'neoforge.launcher.type=server'.
+    private boolean isClientEnvironment() {
+        try {
+            // Strongest signal: dedicated server flag set by launchers/run configs
+            String launchType = System.getProperty("neoforge.launcher.type", "");
+            if ("server".equalsIgnoreCase(launchType)) return false;
+
+            // Also honor common server flags
+            if ("true".equalsIgnoreCase(System.getProperty("nogui"))) return false;
+            if ("true".equalsIgnoreCase(System.getProperty("server"))) return false;
+
+            // If Minecraft is telling us it's a server by its run directory markers, prefer server
+            String gameDir = System.getProperty("minecraft.gameDir", "");
+            if (gameDir != null && !gameDir.isBlank()) {
+                Path gd = java.nio.file.Paths.get(gameDir);
+                // Heuristic: presence of server.properties or world folder usually means server context
+                if (java.nio.file.Files.exists(gd.resolve("server.properties")) ||
+                    java.nio.file.Files.exists(gd.resolve("world"))) {
+                    return false;
+                }
+            }
+
+            // Headless graphics implies server
+            if (java.awt.GraphicsEnvironment.isHeadless()) return false;
+
+            // Otherwise assume client
+            return true;
+        } catch (Throwable t) {
+            // Fail closed: treat as server to avoid opening UI
+            return false;
+        }
+    }
+
+    // Simple terminal prompt that returns "y" or "n".
+    private String promptTerminalYesNo(String prompt, boolean defaultYes) {
+        try {
+            System.out.print(prompt);
+            System.out.flush();
+            var in = new java.io.BufferedReader(new java.io.InputStreamReader(System.in));
+            String line = in.readLine();
+            if (line == null || line.isBlank()) return defaultYes ? "y" : "n";
+            line = line.trim().toLowerCase();
+            if (line.startsWith("y")) return "y";
+            if (line.startsWith("n")) return "n";
+            // re-prompt once
+            System.out.print("(y/n): ");
+            System.out.flush();
+            line = in.readLine();
+            if (line == null || line.isBlank()) return defaultYes ? "y" : "n";
+            line = line.trim().toLowerCase();
+            return line.startsWith("y") ? "y" : "n";
+        } catch (Exception e) {
+            return defaultYes ? "y" : "n";
         }
     }
 
