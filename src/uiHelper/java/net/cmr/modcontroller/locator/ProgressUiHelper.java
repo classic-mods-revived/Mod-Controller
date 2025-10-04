@@ -174,7 +174,11 @@ public class ProgressUiHelper {
                                 }
                             });
 
-                            if (done) break;
+                            if (done) {
+                                System.out.println("UI helper: done flag set, exiting");
+                                System.exit(0);
+                                break;
+                            }
 
                         } catch (Exception ex) {
                             System.err.println("UI helper: error reading progress file: " + ex.getMessage());
@@ -201,6 +205,8 @@ public class ProgressUiHelper {
             CommandPayload cmd = new CommandPayload();
             cmd.action = action;
             Files.writeString(commandFile, GSON.toJson(cmd));
+            System.out.println("UI helper: decision '" + action + "' written, exiting");
+            System.exit(0);
         } catch (Exception e) {
             // ignore
         }

@@ -21,6 +21,7 @@ public class ModControllerLocator implements IModFileCandidateLocator {
 
     private static final Gson GSON = new Gson();
     private static boolean hasRun = false;
+    private Process uiProcess; // track helper
 
     @Override
     public void findCandidates(ILaunchContext context, IDiscoveryPipeline pipeline) {
@@ -51,30 +52,34 @@ public class ModControllerLocator implements IModFileCandidateLocator {
                 writeProgress(progressFile, "Consent Needed", 0,
                         "This modpack will download files required by the author. Do you consent?", false, "consent");
 
-                Process helper = launchHelper(progressFile.toAbsolutePath().toString(), commandFile.toAbsolutePath().toString());
-                System.out.println("ModController: Consent helper launched");
+                if (uiProcess == null || !uiProcess.isAlive()) {
+                    uiProcess = launchHelper(progressFile.toAbsolutePath().toString(), commandFile.toAbsolutePath().toString());
+                    System.out.println("ModController: Consent helper launched");
+                }
 
                 String consentDecision = waitForDecision(commandFile);
                 if (!"accept".equalsIgnoreCase(consentDecision)) {
                     writeProgress(progressFile, "Exiting", 0, "Consent not granted. Exiting...", true, null);
+                    try { if (uiProcess != null && uiProcess.isAlive()) uiProcess.destroy(); } catch (Exception ignored) {}
                     Thread.sleep(300);
                     System.exit(0);
                 }
                 writeProgress(progressFile, "Consent Granted", 0, "Preparing downloads...", false, null);
-                // reset command file for later prompts (e.g., failures)
                 safeDelete(commandFile);
             }
 
             if (!dm.shouldRunDownloads()) {
                 System.out.println("ModController: No downloads needed");
+                try { if (uiProcess != null && uiProcess.isAlive()) uiProcess.destroy(); } catch (Exception ignored) {}
                 return;
             }
 
             writeProgress(progressFile, "Initializing", 0, "Starting download process...", false, null);
 
-            // Launch helper JVM for progress/failure prompts
-            Process helper = launchHelper(progressFile.toAbsolutePath().toString(), commandFile.toAbsolutePath().toString());
-            System.out.println("ModController: Progress helper launched");
+            if (uiProcess == null || !uiProcess.isAlive()) {
+                uiProcess = launchHelper(progressFile.toAbsolutePath().toString(), commandFile.toAbsolutePath().toString());
+                System.out.println("ModController: Progress helper launched");
+            }
 
             final Path progressPath = progressFile;
             final Path commandPath = commandFile;
@@ -101,6 +106,7 @@ public class ModControllerLocator implements IModFileCandidateLocator {
                 String decision = waitForDecision(commandPath);
                 if ("exit".equalsIgnoreCase(decision)) {
                     writeProgress(progressPath, "Exiting", 100, "Closing the game...", true, null);
+                    try { if (uiProcess != null && uiProcess.isAlive()) uiProcess.destroy(); } catch (Exception ignored) {}
                     Thread.sleep(300);
                     System.exit(1);
                 } else {
@@ -114,6 +120,7 @@ public class ModControllerLocator implements IModFileCandidateLocator {
                         true, null);
                 Thread.sleep(200);
             }
+            try { if (uiProcess != null && uiProcess.isAlive()) uiProcess.destroy(); } catch (Exception ignored) {}
 
             System.out.println("========================================");
             System.out.println("MOD CONTROLLER: success=" + successCount +
