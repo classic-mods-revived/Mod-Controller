@@ -9,7 +9,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 public class DownloadManager {
-    private static final String MARKER_FILE = "config/modcontroller.marker";
+    private static final String MARKER_FILE = "modcontroller/modcontroller.marker";
 
     public static final class RunResult {
         public final int success;

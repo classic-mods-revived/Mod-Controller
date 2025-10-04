@@ -40,11 +40,15 @@ public class ModControllerLocator implements IModFileCandidateLocator {
         Path commandFile = null;
         try {
             Path gameDir = getGameDirectory();
+            // Move working files under gameDir/modcontroller/
+            Path mcDir = gameDir.resolve("modcontroller");
+            Files.createDirectories(mcDir); // ensure directory exists BEFORE any writes
+
             ModConfig config = ModConfig.load(gameDir);
             DownloadManager dm = new DownloadManager(gameDir, config);
 
-            progressFile = gameDir.resolve("modcontroller_progress.json");
-            commandFile = gameDir.resolve("modcontroller_command.json");
+            progressFile = mcDir.resolve("modcontroller_progress.json");
+            commandFile = mcDir.resolve("modcontroller_command.json");
             safeDelete(commandFile);
 
             // Consent gate
@@ -176,10 +180,12 @@ public class ModControllerLocator implements IModFileCandidateLocator {
         String javaHome = System.getProperty("java.home");
         String javaBin = javaHome + File.separator + "bin" + File.separator + "java";
 
-        // Prefer a small sidecar UI jar to avoid launcher-modified classpaths
         Path gameDir = getGameDirectory();
-        Path helperJar = gameDir.resolve("config").resolve("modcontroller-ui.jar");
-        Path helperLibDir = gameDir.resolve("config").resolve("modcontroller-ui-libs");
+        Path mcDir = gameDir.resolve("modcontroller");
+        Files.createDirectories(mcDir); // ensure base dir exists for helper artifacts
+
+        Path helperJar = mcDir.resolve("modcontroller-ui.jar");
+        Path helperLibDir = mcDir.resolve("modcontroller-ui-libs");
         Path gsonJar = helperLibDir.resolve("gson.jar");
 
         try {
@@ -206,18 +212,14 @@ public class ModControllerLocator implements IModFileCandidateLocator {
         cmd.add(progressFilePath); cmd.add(commandFilePath);
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
-        Path gd = getGameDirectory();
-        pb.redirectError(gd.resolve("modcontroller-ui.err.log").toFile());
-        pb.redirectOutput(gd.resolve("modcontroller-ui.out.log").toFile());
+        // Remove redirects for err/out logs as requested
         pb.directory(new File(System.getProperty("user.dir")));
         System.out.println("ModController: launching UI helper: " + String.join(" ", cmd));
         try {
             return pb.start();
         } catch (Exception ex) {
             System.err.println("ModController: Failed to start helper process: " + ex.getMessage());
-            // As a last resort, try inline Swing dialog if possible
             tryInlineConsentDialog(progressFilePath, commandFilePath);
-            // return a dummy process placeholder (not used; caller awaits command file)
             return null;
         }
     }
