@@ -8,11 +8,14 @@ import net.neoforged.neoforgespi.ILaunchContext;
 import net.neoforged.neoforgespi.locating.IDiscoveryPipeline;
 import net.neoforged.neoforgespi.locating.IModFileCandidateLocator;
 
+import java.awt.*;
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
+import java.util.List;
 
 public class ModControllerLocator implements IModFileCandidateLocator {
 
@@ -165,21 +168,104 @@ public class ModControllerLocator implements IModFileCandidateLocator {
     private Process launchHelper(String progressFilePath, String commandFilePath) throws Exception {
         String javaHome = System.getProperty("java.home");
         String javaBin = javaHome + File.separator + "bin" + File.separator + "java";
-        String classpath = System.getProperty("java.class.path");
+
+        // Prefer a small sidecar UI jar to avoid launcher-modified classpaths
+        Path gameDir = getGameDirectory();
+        Path helperJar = gameDir.resolve("config").resolve("modcontroller-ui.jar");
+        Path helperLibDir = gameDir.resolve("config").resolve("modcontroller-ui-libs");
+        Path gsonJar = helperLibDir.resolve("gson.jar");
+
+        try {
+            Files.deleteIfExists(helperJar);
+            Files.createDirectories(helperLibDir);
+            extractHelperJar(helperJar);
+            extractGsonTo(gsonJar);
+        } catch (Exception e) {
+            System.err.println("ModController: Failed to refresh helper or libs: " + e.getMessage());
+        }
 
         List<String> cmd = new ArrayList<>();
         cmd.add(javaBin);
         for (String arg : getSafeJvmArgs()) cmd.add(arg);
+        cmd.add("-Djava.awt.headless=false");
+        cmd.add("-Dapple.awt.application.name=Mod Controller");
+        cmd.add("-Dapple.awt.application.appearance=system");
+
+        // Use -cp: helper + gson
+        String cp = helperJar.toAbsolutePath() + File.pathSeparator + gsonJar.toAbsolutePath();
         cmd.add("-cp");
-        cmd.add(classpath);
-        cmd.add(ProgressUiHelper.class.getName());
-        cmd.add(progressFilePath);
-        cmd.add(commandFilePath);
+        cmd.add(cp);
+        cmd.add("net.cmr.modcontroller.locator.ProgressUiHelper");
+        cmd.add(progressFilePath); cmd.add(commandFilePath);
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.inheritIO();
+        Path gd = getGameDirectory();
+        pb.redirectError(gd.resolve("modcontroller-ui.err.log").toFile());
+        pb.redirectOutput(gd.resolve("modcontroller-ui.out.log").toFile());
         pb.directory(new File(System.getProperty("user.dir")));
-        return pb.start();
+        System.out.println("ModController: launching UI helper: " + String.join(" ", cmd));
+        try {
+            return pb.start();
+        } catch (Exception ex) {
+            System.err.println("ModController: Failed to start helper process: " + ex.getMessage());
+            // As a last resort, try inline Swing dialog if possible
+            tryInlineConsentDialog(progressFilePath, commandFilePath);
+            // return a dummy process placeholder (not used; caller awaits command file)
+            return null;
+        }
+    }
+
+    private void extractGsonTo(Path target) throws IOException {
+        Files.createDirectories(target.getParent());
+        try (var in = ModControllerLocator.class.getResourceAsStream("/modcontroller/gson.jar")) {
+            if (in == null) throw new IOException("Resource '/modcontroller/gson.jar' not found");
+            Files.copy(in, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    // Extracts a minimal shaded helper jar shipped as a resource
+    private void extractHelperJar(Path target) throws IOException {
+        Files.createDirectories(target.getParent());
+        try (var in = ModControllerLocator.class.getResourceAsStream("/modcontroller/modcontroller-ui.jar")) {
+            if (in == null) {
+                throw new IOException("Resource '/modcontroller/modcontroller-ui.jar' not found in mod jar");
+            }
+            Files.copy(in, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private void tryInlineConsentDialog(String progressFilePath, String commandFilePath) {
+        try {
+            // Only for the consent/prompt phases. Non-blocking: write a minimal prompt inline.
+            if (GraphicsEnvironment.isHeadless()) {
+                System.err.println("ModController: Headless environment; inline dialog unavailable.");
+                return;
+            }
+            javax.swing.SwingUtilities.invokeLater(() -> {
+                try {
+                    javax.swing.UIManager.setLookAndFeel(javax.swing.UIManager.getSystemLookAndFeelClassName());
+                } catch (Exception ignore) {}
+                String[] options = {"Continue", "Exit"};
+                int choice = javax.swing.JOptionPane.showOptionDialog(
+                        null,
+                        "Downloads are required. Continue?",
+                        "Mod Controller",
+                        javax.swing.JOptionPane.DEFAULT_OPTION,
+                        javax.swing.JOptionPane.QUESTION_MESSAGE,
+                        null,
+                        options, options[0]
+                );
+                Path commandFile = Path.of(commandFilePath);
+                String action = (choice == 1) ? "exit" : "continue";
+                try {
+                    Files.writeString(commandFile, "{\"action\":\"" + action + "\"}");
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            });
+        } catch (Exception e) {
+            System.err.println("ModController: Inline dialog failed: " + e.getMessage());
+        }
     }
 
     private List<String> getSafeJvmArgs() {
